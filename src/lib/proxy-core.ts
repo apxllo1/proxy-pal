@@ -198,18 +198,22 @@ export function rewriteHtml(
       try{ arguments[1]=rew(u); }catch(e){}
       return origOpen.apply(this,arguments);
     };
-    ['src','href'].forEach(function(prop){
-      ['HTMLScriptElement','HTMLImageElement','HTMLLinkElement','HTMLIFrameElement','HTMLSourceElement','HTMLMediaElement','HTMLAnchorElement'].forEach(function(cn){
-        var C=window[cn]; if(!C) return;
-        var d=Object.getOwnPropertyDescriptor(C.prototype,prop);
-        if(!d||!d.set) return;
-        Object.defineProperty(C.prototype,prop,{
-          configurable:true,enumerable:d.enumerable,
-          get:d.get, set:function(v){ try{v=rew(v);}catch(e){} return d.set.call(this,v); }
-        });
+    function hookProp(cn, prop){
+      var C=window[cn]; if(!C) return;
+      var proto=C.prototype, d, owner=proto;
+      while(owner && !(d=Object.getOwnPropertyDescriptor(owner,prop))) owner=Object.getPrototypeOf(owner);
+      if(!d||!d.set) return;
+      Object.defineProperty(proto,prop,{
+        configurable:true,enumerable:d.enumerable,
+        get:function(){return d.get.call(this);},
+        set:function(v){ try{v=rew(v);}catch(e){} return d.set.call(this,v); }
       });
+    }
+    ['HTMLScriptElement','HTMLImageElement','HTMLLinkElement','HTMLIFrameElement','HTMLSourceElement','HTMLMediaElement','HTMLEmbedElement','HTMLAnchorElement'].forEach(function(cn){
+      hookProp(cn,'src'); hookProp(cn,'href');
     });
-    // setAttribute variant used by many frameworks.
+    hookProp('HTMLFormElement','action');
+    // setAttribute — many frameworks use it directly.
     var origSetAttr=Element.prototype.setAttribute;
     Element.prototype.setAttribute=function(name,value){
       try{
@@ -224,6 +228,27 @@ export function rewriteHtml(
       }catch(e){}
       return origSetAttr.call(this,name,value);
     };
+    // Turbopack/webpack build chunk URLs from location.origin, so also
+    // rewrite paths as they're appended.
+    var origAppend=Node.prototype.appendChild;
+    Node.prototype.appendChild=function(node){
+      try{
+        if(node && node.tagName){
+          var tn=node.tagName.toUpperCase();
+          if(tn==='SCRIPT'||tn==='LINK'||tn==='IMG'||tn==='IFRAME'||tn==='SOURCE'){
+            var attr=(tn==='LINK')?'href':'src';
+            var cur=node.getAttribute(attr);
+            if(cur){ var fixed=rew(cur); if(fixed!==cur) node.setAttribute(attr,fixed); }
+          }
+        }
+      }catch(e){}
+      return origAppend.call(this,node);
+    };
+    // Trap location.origin misuse: some loaders read it and concat paths.
+    // We can't override location.origin without breaking things, so we
+    // also override URL/Request constructors to catch new URL(path, location).
+    var OrigURL=window.URL;
+    // (skip URL patching — too invasive)
     try{Object.defineProperty(window,'top',{get:function(){return window;}});}catch(e){}
     try{Object.defineProperty(window,'parent',{get:function(){return window;}});}catch(e){}
   })();</script>`;
