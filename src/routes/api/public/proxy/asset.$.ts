@@ -75,14 +75,21 @@ async function handle(request: Request, splat: string) {
 
   const headers = sanitizeUpstreamHeaders(upstream.headers);
   const ct = upstream.headers.get("content-type") ?? "";
+  const proxyOrigin = new URL(request.url).origin;
 
-  // If the asset came back as HTML (e.g. a redirected page fetch), rewrite
-  // it so nested navigation continues to work through the proxy.
   if (ct.includes("text/html")) {
     const html = await upstream.text();
     const finalUrl = new URL(upstream.url || targetUrl.href);
-    const rewritten = rewriteHtml(html, finalUrl);
+    const rewritten = rewriteHtml(html, finalUrl, proxyOrigin);
     headers.set("content-type", "text/html; charset=utf-8");
+    return new Response(rewritten, { status: upstream.status, headers });
+  }
+
+  if (ct.includes("text/css")) {
+    const css = await upstream.text();
+    const finalUrl = new URL(upstream.url || targetUrl.href);
+    const rewritten = rewriteCss(css, finalUrl, proxyOrigin);
+    headers.set("content-type", "text/css; charset=utf-8");
     return new Response(rewritten, { status: upstream.status, headers });
   }
 
