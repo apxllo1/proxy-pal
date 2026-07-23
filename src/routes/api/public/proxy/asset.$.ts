@@ -22,6 +22,7 @@ const HOP_BY_HOP = new Set([
   "cookie",
   "origin",
   "referer",
+  "accept-encoding",
 ]);
 
 async function handle(request: Request, splat: string) {
