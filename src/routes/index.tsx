@@ -153,27 +153,58 @@ function Home() {
     savePinned(pinned.filter((p) => p.url !== url));
   };
 
+  const buildProxyPageUrl = (target: string, session: string, r: Rig) => {
+    const qp = new URLSearchParams();
+    qp.set("session", session);
+    if (r.mode !== "off") {
+      qp.set("rig_mode", r.mode);
+      qp.set("rig_value", String(r.value));
+      if (r.mode === "range") qp.set("rig_max", String(r.max));
+    }
+    return `/api/public/proxy/page/${encodeURIComponent(target)}?${qp.toString()}`;
+  };
+
   const load = async (raw: string, mode: "push" | "replace" = "push") => {
     const url = raw.trim();
     if (!url) return;
     const normalized = /^https?:\/\//i.test(url) ? url : "https://" + url;
 
-    // If the host is known to allow direct framing, skip the HTML rewriter
-    // entirely — load it straight into the iframe so all its JS/APIs work.
+    // Rotate identity on EVERY navigation — the whole point of the proxy is
+    // "different location every time you use it".
+    const nextSession =
+      Math.random().toString(36).slice(2) + Date.now().toString(36);
+    setSessionId(nextSession);
+
+    let host = "";
     try {
-      const host = new URL(normalized).hostname.toLowerCase();
-      if (DIRECT_FRAME_HOSTS.has(host)) {
-        launchExternal(normalized, host.replace(/^www\./, ""));
-        return;
-      }
+      host = new URL(normalized).hostname.toLowerCase();
     } catch {}
+
+    if (DIRECT_FRAME_HOSTS.has(host)) {
+      launchExternal(normalized, host.replace(/^www\./, ""));
+      return;
+    }
+
+    // SPA-heavy hosts (Next.js like rngdle) crash inside a srcdoc iframe
+    // because srcdoc gives them an opaque origin. Serve them through a
+    // real same-origin route so location/history/fetch behave normally.
+    if (RIGGABLE_HOSTS.has(host)) {
+      const proxied = buildProxyPageUrl(normalized, nextSession, rig);
+      launchExternal(proxied, host.replace(/^www\./, "") + " · proxy");
+      setInput(normalized);
+      pushHistory(normalized);
+      setStack((s) =>
+        mode === "replace" ? [...s.slice(0, -1), normalized] : [...s, normalized],
+      );
+      setIdentity(`location #${nextSession.slice(0, 4)}`);
+      return;
+    }
 
     setLoading(true);
     setError(null);
     try {
-      const host = (() => { try { return new URL(normalized).hostname.toLowerCase(); } catch { return ""; } })();
       const sendRig = RIGGABLE_HOSTS.has(host) ? rig : undefined;
-      const res = await run({ data: { url: normalized, session: sessionId, rig: sendRig } });
+      const res = await run({ data: { url: normalized, session: nextSession, rig: sendRig } });
       if (!res.ok) {
         setError(res.error);
       } else {

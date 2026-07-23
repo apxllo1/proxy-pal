@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiPublicProxyPageSplatRouteImport } from './routes/api/public/proxy/page.$'
+import { Route as ApiPublicProxyAssetSplatRouteImport } from './routes/api/public/proxy/asset.$'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,30 +23,44 @@ const ApiPublicProxyPageSplatRoute = ApiPublicProxyPageSplatRouteImport.update({
   path: '/api/public/proxy/page/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicProxyAssetSplatRoute =
+  ApiPublicProxyAssetSplatRouteImport.update({
+    id: '/api/public/proxy/asset/$',
+    path: '/api/public/proxy/asset/$',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/public/proxy/asset/$': typeof ApiPublicProxyAssetSplatRoute
   '/api/public/proxy/page/$': typeof ApiPublicProxyPageSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/public/proxy/asset/$': typeof ApiPublicProxyAssetSplatRoute
   '/api/public/proxy/page/$': typeof ApiPublicProxyPageSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/public/proxy/asset/$': typeof ApiPublicProxyAssetSplatRoute
   '/api/public/proxy/page/$': typeof ApiPublicProxyPageSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/public/proxy/page/$'
+  fullPaths: '/' | '/api/public/proxy/asset/$' | '/api/public/proxy/page/$'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/public/proxy/page/$'
-  id: '__root__' | '/' | '/api/public/proxy/page/$'
+  to: '/' | '/api/public/proxy/asset/$' | '/api/public/proxy/page/$'
+  id:
+    | '__root__'
+    | '/'
+    | '/api/public/proxy/asset/$'
+    | '/api/public/proxy/page/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiPublicProxyAssetSplatRoute: typeof ApiPublicProxyAssetSplatRoute
   ApiPublicProxyPageSplatRoute: typeof ApiPublicProxyPageSplatRoute
 }
 
@@ -65,11 +80,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicProxyPageSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/proxy/asset/$': {
+      id: '/api/public/proxy/asset/$'
+      path: '/api/public/proxy/asset/$'
+      fullPath: '/api/public/proxy/asset/$'
+      preLoaderRoute: typeof ApiPublicProxyAssetSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiPublicProxyAssetSplatRoute: ApiPublicProxyAssetSplatRoute,
   ApiPublicProxyPageSplatRoute: ApiPublicProxyPageSplatRoute,
 }
 export const routeTree = rootRouteImport
