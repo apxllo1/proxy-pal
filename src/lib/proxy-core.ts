@@ -273,17 +273,20 @@ export function rewriteHtml(
     },true);
   })();</script>`;
 
-  // Skip <script> and <style> bodies so we don't mangle JS strings that
-  // happen to contain href=/src=/action= (Next.js embeds JSON with such
-  // tokens in the initial payload).
+  // Skip <style> bodies and inline <script> bodies (no src attribute) so
+  // we don't mangle JS/CSS content that happens to contain href=/src=.
+  // Script tags WITH src still get their attribute rewritten below.
   const guards: string[] = [];
-  const guarded = html.replace(
-    /<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi,
-    (m) => {
+  const guarded = html
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, (m) => {
       const idx = guards.push(m) - 1;
       return `\u0000GUARD${idx}\u0000`;
-    },
-  );
+    })
+    .replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (m, attrs: string, body: string) => {
+      if (/\bsrc\s*=/i.test(attrs)) return m; // let the attr regex touch src
+      const idx = guards.push(`<script${attrs}>${body}</script>`) - 1;
+      return `\u0000GUARD${idx}\u0000`;
+    });
 
   const attrRe = /\b(src|href|action|formaction|data|poster)=(")([^"]+)(")|\b(src|href|action|formaction|data|poster)=(')([^']+)(')/gi;
   let rewritten = guarded.replace(attrRe, (_m, a1, q1a, v1, q1b, a2, q2a, v2, q2b) => {
