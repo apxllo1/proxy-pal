@@ -94,7 +94,11 @@ async function handle(request: Request, splat: string) {
     return new Response(rewritten, { status: upstream.status, headers });
   }
 
-  return new Response(upstream.body, {
+  // Read as ArrayBuffer so fetch decompresses gzip/br transparently.
+  // Streaming upstream.body directly would forward raw compressed bytes,
+  // but we already stripped content-encoding for the browser.
+  const buf = await upstream.arrayBuffer();
+  return new Response(buf, {
     status: upstream.status,
     headers,
   });
