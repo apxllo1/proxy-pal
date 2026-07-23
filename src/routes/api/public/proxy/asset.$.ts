@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import {
   normalizeUrl,
   pickIdentity,
+  rewriteCss,
   rewriteHtml,
   sanitizeUpstreamHeaders,
   upstreamHeaders,
