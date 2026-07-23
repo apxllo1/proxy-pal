@@ -4,17 +4,6 @@ import { z } from "zod";
 const inputSchema = z.object({
   url: z.string().url(),
   session: z.string().optional(),
-  // Rig config for sites that use Math.random client-side (e.g. rngdle).
-  // mode: "off" | "fixed" | "range"
-  // value: for "fixed" a number 0..1; for "range" an integer target we'll
-  // bias Math.random toward when the site calls Math.floor(Math.random()*N).
-  rig: z
-    .object({
-      mode: z.enum(["off", "fixed", "range"]).default("off"),
-      value: z.number().optional(),
-      max: z.number().optional(),
-    })
-    .optional(),
 });
 
 function normalizeUrl(raw: string): string {
@@ -121,35 +110,6 @@ export const proxyFetch = createServerFn({ method: "POST" })
     const baseTag = `<base href="${targetUrl.origin}${targetUrl.pathname.replace(/[^/]*$/, "")}">`;
     const styleTag = `<style>html,body{background:#fff}</style>`;
 
-    // Rig script — overrides Math.random so sites using it for local
-    // "randomness" produce the outcome the user configured. Injected only
-    // when a rig is active.
-    const rig = data.rig;
-    const rigScript =
-      rig && rig.mode && rig.mode !== "off"
-        ? `<script>(function(){
-            var mode=${JSON.stringify(rig.mode)};
-            var val=${JSON.stringify(rig.value ?? null)};
-            var max=${JSON.stringify(rig.max ?? null)};
-            var orig=Math.random;
-            Math.random=function(){
-              if(mode==='fixed' && typeof val==='number'){
-                // clamp into [0,1)
-                var v=val; if(v<0)v=0; if(v>=1)v=0.9999999;
-                return v;
-              }
-              if(mode==='range' && typeof val==='number' && typeof max==='number' && max>0){
-                // Site typically does Math.floor(Math.random()*N). We return
-                // (val + tiny jitter)/max so floor lands on val for any N<=max.
-                var target=(val + 0.5)/max;
-                if(target<0)target=0; if(target>=1)target=0.9999999;
-                return target;
-              }
-              return orig();
-            };
-          })();</script>`
-        : "";
-
     const navScript = `<script>(function(){
       try{Object.defineProperty(window,'top',{get:()=>window});}catch(e){}
       function abs(u){try{return new URL(u,document.baseURI).href}catch(e){return null}}
@@ -173,8 +133,7 @@ export const proxyFetch = createServerFn({ method: "POST" })
       },true);
     })();</script>`;
 
-    // Rig must run BEFORE the page's own scripts, so inject at the very top of <head>.
-    const headInject = `${baseTag}${styleTag}${rigScript}${navScript}`;
+    const headInject = `${baseTag}${styleTag}${navScript}`;
     if (/<head[^>]*>/i.test(html)) {
       html = html.replace(/<head([^>]*)>/i, `<head$1>${headInject}`);
     } else {
