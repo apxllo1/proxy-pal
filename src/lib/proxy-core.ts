@@ -248,9 +248,20 @@ export function rewriteHtml(
     },true);
   })();</script>`;
 
-  // Rewrite inline HTML attributes to absolute proxy URLs.
+  // Skip <script> and <style> bodies so we don't mangle JS strings that
+  // happen to contain href=/src=/action= (Next.js embeds JSON with such
+  // tokens in the initial payload).
+  const guards: string[] = [];
+  const guarded = html.replace(
+    /<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi,
+    (m) => {
+      const idx = guards.push(m) - 1;
+      return `\u0000GUARD${idx}\u0000`;
+    },
+  );
+
   const attrRe = /\b(src|href|action|formaction|data|poster)=(")([^"]+)(")|\b(src|href|action|formaction|data|poster)=(')([^']+)(')/gi;
-  html = html.replace(attrRe, (_m, a1, q1a, v1, q1b, a2, q2a, v2, q2b) => {
+  let rewritten = guarded.replace(attrRe, (_m, a1, q1a, v1, q1b, a2, q2a, v2, q2b) => {
     const attr = (a1 || a2) as string;
     const quote = (q1a || q2a) as string;
     const val = (v1 || v2) as string;
@@ -265,15 +276,13 @@ export function rewriteHtml(
     return `${attr}=${quote}${proxyUrlFor(absUrl, proxyOrigin)}${quote}`;
   });
 
-  // srcset variants.
-  html = html.replace(/\bsrcset=(")([^"]+)(")|\bsrcset=(')([^']+)(')/gi, (_m, q1a, v1, q1b, q2a, v2, q2b) => {
+  rewritten = rewritten.replace(/\bsrcset=(")([^"]+)(")|\bsrcset=(')([^']+)(')/gi, (_m, q1a, v1, q1b, q2a, v2, q2b) => {
     const quote = (q1a || q2a) as string;
     const val = (v1 || v2) as string;
-    const rewritten = val
+    const out = val
       .split(",")
       .map((piece) => {
-        const trimmed = piece.trim();
-        const parts = trimmed.split(/\s+/);
+        const parts = piece.trim().split(/\s+/);
         if (!parts[0]) return piece;
         try {
           const abs = new URL(parts[0], documentBase).href;
@@ -282,8 +291,11 @@ export function rewriteHtml(
         return parts.join(" ");
       })
       .join(", ");
-    return `srcset=${quote}${rewritten}${quote}`;
+    return `srcset=${quote}${out}${quote}`;
   });
+
+  html = rewritten.replace(/\u0000GUARD(\d+)\u0000/g, (_m, i) => guards[Number(i)]);
+
 
   const headInject = `${styleTag}${shim}${rigScript}${navScript}`;
   if (/<head[^>]*>/i.test(html)) {
