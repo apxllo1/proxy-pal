@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import {
   normalizeUrl,
   pickIdentity,
+  rewriteCss,
   rewriteHtml,
   sanitizeUpstreamHeaders,
   upstreamHeaders,
@@ -21,6 +22,7 @@ const HOP_BY_HOP = new Set([
   "cookie",
   "origin",
   "referer",
+  "accept-encoding",
 ]);
 
 async function handle(request: Request, splat: string) {
@@ -74,18 +76,29 @@ async function handle(request: Request, splat: string) {
 
   const headers = sanitizeUpstreamHeaders(upstream.headers);
   const ct = upstream.headers.get("content-type") ?? "";
+  const proxyOrigin = new URL(request.url).origin;
 
-  // If the asset came back as HTML (e.g. a redirected page fetch), rewrite
-  // it so nested navigation continues to work through the proxy.
   if (ct.includes("text/html")) {
     const html = await upstream.text();
     const finalUrl = new URL(upstream.url || targetUrl.href);
-    const rewritten = rewriteHtml(html, finalUrl);
+    const rewritten = rewriteHtml(html, finalUrl, proxyOrigin);
     headers.set("content-type", "text/html; charset=utf-8");
     return new Response(rewritten, { status: upstream.status, headers });
   }
 
-  return new Response(upstream.body, {
+  if (ct.includes("text/css")) {
+    const css = await upstream.text();
+    const finalUrl = new URL(upstream.url || targetUrl.href);
+    const rewritten = rewriteCss(css, finalUrl, proxyOrigin);
+    headers.set("content-type", "text/css; charset=utf-8");
+    return new Response(rewritten, { status: upstream.status, headers });
+  }
+
+  // Read as ArrayBuffer so fetch decompresses gzip/br transparently.
+  // Streaming upstream.body directly would forward raw compressed bytes,
+  // but we already stripped content-encoding for the browser.
+  const buf = await upstream.arrayBuffer();
+  return new Response(buf, {
     status: upstream.status,
     headers,
   });

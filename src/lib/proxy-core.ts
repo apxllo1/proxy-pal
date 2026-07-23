@@ -104,23 +104,46 @@ export function sanitizeUpstreamHeaders(src: Headers): Headers {
 
 const ASSET_PREFIX = "/api/public/proxy/asset/";
 
-function encodeTarget(url: string): string {
-  return ASSET_PREFIX + encodeURIComponent(url);
+export function proxyUrlFor(targetAbs: string, proxyOrigin: string): string {
+  return proxyOrigin + ASSET_PREFIX + encodeURIComponent(targetAbs);
 }
 
-// Rewrite absolute + protocol-relative URLs in HTML so subresources
-// (scripts, styles, images, XHR triggered from HTML) go through our asset
-// passthrough instead of hitting the upstream origin directly (which
-// would trip CORS / mixed-origin bugs).
+// Rewrite `url(...)` and `@import` references in a CSS payload so fonts
+// and background images route through the proxy.
+export function rewriteCss(css: string, cssUrl: URL, proxyOrigin: string): string {
+  const base = cssUrl.href;
+  const rew = (raw: string): string => {
+    const trimmed = raw.trim().replace(/^['"]|['"]$/g, "");
+    if (!trimmed || /^(data:|blob:|about:|#)/i.test(trimmed)) return raw;
+    try {
+      const abs = new URL(trimmed, base).href;
+      return `"${proxyUrlFor(abs, proxyOrigin)}"`;
+    } catch {
+      return raw;
+    }
+  };
+  css = css.replace(/url\(\s*([^)]+?)\s*\)/gi, (_m, inner) => `url(${rew(inner)})`);
+  css = css.replace(/@import\s+(?:url\()?\s*(['"][^'"]+['"])\s*\)?/gi, (_m, q) => {
+    const proxied = rew(q);
+    return `@import ${proxied}`;
+  });
+  return css;
+}
+
+// Rewrite HTML: convert every asset/link URL to an absolute proxy URL on
+// our own origin. We DON'T emit <base> — with <base>, root-relative paths
+// (which our shim also emits) resolve against the upstream origin and
+// escape the proxy entirely.
 export function rewriteHtml(
   html: string,
   targetUrl: URL,
+  proxyOrigin: string,
   rig?: RigConfig,
 ): string {
   const origin = targetUrl.origin;
   const basePath = targetUrl.pathname.replace(/[^/]*$/, "");
+  const documentBase = origin + basePath;
 
-  const baseTag = `<base href="${origin}${basePath}">`;
   const styleTag = `<style>html,body{background:#fff}</style>`;
 
   const rigScript =
@@ -140,26 +163,27 @@ export function rewriteHtml(
         })();</script>`
       : "";
 
-  // Runtime shim: rewrites fetch/XHR/dynamic script and image sources so
-  // rngdle's `/api/stats/global` and Next chunk fetches route through our
-  // asset passthrough and keep the app alive.
+  // Runtime shim: proxy fetch/XHR/element src writes, always producing
+  // absolute proxy URLs so `<base>` (or its absence) can't reshuffle them.
   const shim = `<script>(function(){
     var ORIGIN=${JSON.stringify(origin)};
-    var BASE=${JSON.stringify(origin + basePath)};
+    var BASE=${JSON.stringify(documentBase)};
     var ASSET=${JSON.stringify(ASSET_PREFIX)};
     var SELF=location.origin;
     function abs(u){try{return new URL(u,BASE).href}catch(e){return null}}
-    function shouldProxy(u){
-      if(!u) return false;
-      if(u.startsWith(ASSET)) return false;
-      if(u.startsWith('data:')||u.startsWith('blob:')||u.startsWith('javascript:')) return false;
-      return true;
-    }
+    function isProxied(u){return u && (u.indexOf(ASSET)===0 || u.indexOf(SELF+ASSET)===0);}
     function rew(u){
-      if(!shouldProxy(u)) return u;
+      if(!u) return u;
+      if(typeof u!=='string') return u;
+      if(/^(data:|blob:|javascript:|mailto:|tel:|about:|#)/i.test(u)) return u;
+      if(isProxied(u)) {
+        // Already-proxied but may be root-relative; make absolute so
+        // subsequent resolution against document URL doesn't mangle it.
+        if(u.indexOf(ASSET)===0) return SELF+u;
+        return u;
+      }
       var a=abs(u); if(!a) return u;
-      if(a.startsWith(SELF+ASSET)) return a;
-      return ASSET+encodeURIComponent(a);
+      return SELF+ASSET+encodeURIComponent(a);
     }
     var origFetch=window.fetch.bind(window);
     window.fetch=function(input,init){
@@ -174,65 +198,134 @@ export function rewriteHtml(
       try{ arguments[1]=rew(u); }catch(e){}
       return origOpen.apply(this,arguments);
     };
-    // Intercept dynamic <script>/<img>/<link> src writes.
-    ['src','href'].forEach(function(prop){
-      ['HTMLScriptElement','HTMLImageElement','HTMLLinkElement','HTMLIFrameElement','HTMLSourceElement','HTMLMediaElement'].forEach(function(cn){
-        var C=window[cn]; if(!C) return;
-        var d=Object.getOwnPropertyDescriptor(C.prototype,prop);
-        if(!d||!d.set) return;
-        Object.defineProperty(C.prototype,prop,{
-          configurable:true,enumerable:d.enumerable,
-          get:d.get, set:function(v){ try{v=rew(v);}catch(e){} return d.set.call(this,v); }
-        });
+    function hookProp(cn, prop){
+      var C=window[cn]; if(!C) return;
+      var proto=C.prototype, d, owner=proto;
+      while(owner && !(d=Object.getOwnPropertyDescriptor(owner,prop))) owner=Object.getPrototypeOf(owner);
+      if(!d||!d.set) return;
+      Object.defineProperty(proto,prop,{
+        configurable:true,enumerable:d.enumerable,
+        get:function(){return d.get.call(this);},
+        set:function(v){ try{v=rew(v);}catch(e){} return d.set.call(this,v); }
       });
+    }
+    ['HTMLScriptElement','HTMLImageElement','HTMLLinkElement','HTMLIFrameElement','HTMLSourceElement','HTMLMediaElement','HTMLEmbedElement','HTMLAnchorElement'].forEach(function(cn){
+      hookProp(cn,'src'); hookProp(cn,'href');
     });
-    // Neutralise framebusters.
+    hookProp('HTMLFormElement','action');
+    // setAttribute — many frameworks use it directly.
+    var origSetAttr=Element.prototype.setAttribute;
+    Element.prototype.setAttribute=function(name,value){
+      try{
+        var n=(name||'').toLowerCase();
+        if(n==='src'||n==='href'||n==='action'||n==='formaction'||n==='poster'){
+          value=rew(value);
+        }else if(n==='srcset'&&typeof value==='string'){
+          value=value.split(',').map(function(p){
+            var t=p.trim().split(/\\s+/); if(!t[0]) return p; t[0]=rew(t[0]); return t.join(' ');
+          }).join(', ');
+        }
+      }catch(e){}
+      return origSetAttr.call(this,name,value);
+    };
+    // Turbopack/webpack build chunk URLs from location.origin, so also
+    // rewrite paths as they're appended.
+    var origAppend=Node.prototype.appendChild;
+    Node.prototype.appendChild=function(node){
+      try{
+        if(node && node.tagName){
+          var tn=node.tagName.toUpperCase();
+          if(tn==='SCRIPT'||tn==='LINK'||tn==='IMG'||tn==='IFRAME'||tn==='SOURCE'){
+            var attr=(tn==='LINK')?'href':'src';
+            var cur=node.getAttribute(attr);
+            if(cur){ var fixed=rew(cur); if(fixed!==cur) node.setAttribute(attr,fixed); }
+          }
+        }
+      }catch(e){}
+      return origAppend.call(this,node);
+    };
+    // Trap location.origin misuse: some loaders read it and concat paths.
+    // We can't override location.origin without breaking things, so we
+    // also override URL/Request constructors to catch new URL(path, location).
+    var OrigURL=window.URL;
+    // (skip URL patching — too invasive)
     try{Object.defineProperty(window,'top',{get:function(){return window;}});}catch(e){}
     try{Object.defineProperty(window,'parent',{get:function(){return window;}});}catch(e){}
   })();</script>`;
 
   const navScript = `<script>(function(){
-    function abs(u){try{return new URL(u,document.baseURI).href}catch(e){return null}}
+    function abs(u){try{return new URL(u,${JSON.stringify(documentBase)}).href}catch(e){return null}}
     function send(u){if(u)parent.postMessage({__prism:'nav',url:u},'*')}
     document.addEventListener('click',function(e){
       var a=e.target && e.target.closest && e.target.closest('a[href]');
       if(!a)return;
       var href=a.getAttribute('href');
       if(!href||href.startsWith('javascript:')||href.startsWith('#'))return;
-      e.preventDefault();send(abs(href));
-    },true);
-    document.addEventListener('submit',function(e){
-      var f=e.target;if(!f||f.tagName!=='FORM')return;
-      var method=(f.method||'GET').toUpperCase();
-      if(method!=='GET')return;
-      e.preventDefault();
-      var params=new URLSearchParams(new FormData(f)).toString();
-      var action=abs(f.action||location.href);
-      if(!action)return;
-      send(action+(action.includes('?')?'&':'?')+params);
+      // Same-app navigations inside the SPA use pushState; only escape
+      // to the parent for full URL changes to a different host.
+      var u=abs(href); if(!u) return;
+      try{
+        var target=new URL(u);
+        var here=new URL(${JSON.stringify(targetUrl.href)});
+        if(target.host===here.host) return; // let SPA router handle it
+      }catch(err){}
+      e.preventDefault();send(u);
     },true);
   })();</script>`;
 
-  // Rewrite absolute URLs of the target origin found in inline HTML
-  // attributes (src=, href=, action=). We also handle protocol-relative
-  // (//host/…) and root-relative (/…) forms.
-  const attrRe = /\b(src|href|action|data|poster)=(")([^"]+)(")|\b(src|href|action|data|poster)=(')([^']+)(')/gi;
-  html = html.replace(attrRe, (_m, a1, q1a, v1, q1b, a2, q2a, v2, q2b) => {
+  // Skip <style> bodies and inline <script> bodies (no src attribute) so
+  // we don't mangle JS/CSS content that happens to contain href=/src=.
+  // Script tags WITH src still get their attribute rewritten below.
+  const guards: string[] = [];
+  const guarded = html
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, (m) => {
+      const idx = guards.push(m) - 1;
+      return `\u0000GUARD${idx}\u0000`;
+    })
+    .replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (m, attrs: string, body: string) => {
+      if (/\bsrc\s*=/i.test(attrs)) return m; // let the attr regex touch src
+      const idx = guards.push(`<script${attrs}>${body}</script>`) - 1;
+      return `\u0000GUARD${idx}\u0000`;
+    });
+
+  const attrRe = /\b(src|href|action|formaction|data|poster)=(")([^"]+)(")|\b(src|href|action|formaction|data|poster)=(')([^']+)(')/gi;
+  let rewritten = guarded.replace(attrRe, (_m, a1, q1a, v1, q1b, a2, q2a, v2, q2b) => {
     const attr = (a1 || a2) as string;
     const quote = (q1a || q2a) as string;
     const val = (v1 || v2) as string;
     if (!val) return _m;
-    if (/^(data:|blob:|javascript:|mailto:|tel:|#)/i.test(val)) return _m;
+    if (/^(data:|blob:|javascript:|mailto:|tel:|about:|#)/i.test(val)) return _m;
     let absUrl: string;
     try {
-      absUrl = new URL(val, origin + basePath).href;
+      absUrl = new URL(val, documentBase).href;
     } catch {
       return _m;
     }
-    return `${attr}=${quote}${encodeTarget(absUrl)}${quote}`;
+    return `${attr}=${quote}${proxyUrlFor(absUrl, proxyOrigin)}${quote}`;
   });
 
-  const headInject = `${baseTag}${styleTag}${shim}${rigScript}${navScript}`;
+  rewritten = rewritten.replace(/\bsrcset=(")([^"]+)(")|\bsrcset=(')([^']+)(')/gi, (_m, q1a, v1, q1b, q2a, v2, q2b) => {
+    const quote = (q1a || q2a) as string;
+    const val = (v1 || v2) as string;
+    const out = val
+      .split(",")
+      .map((piece) => {
+        const parts = piece.trim().split(/\s+/);
+        if (!parts[0]) return piece;
+        try {
+          const abs = new URL(parts[0], documentBase).href;
+          parts[0] = proxyUrlFor(abs, proxyOrigin);
+        } catch {}
+        return parts.join(" ");
+      })
+      .join(", ");
+    return `srcset=${quote}${out}${quote}`;
+  });
+
+  html = rewritten.replace(/\u0000GUARD(\d+)\u0000/g, (_m, i) => guards[Number(i)]);
+
+
+  const headInject = `${styleTag}${shim}${rigScript}${navScript}`;
   if (/<head[^>]*>/i.test(html)) {
     html = html.replace(/<head([^>]*)>/i, `<head$1>${headInject}`);
   } else {

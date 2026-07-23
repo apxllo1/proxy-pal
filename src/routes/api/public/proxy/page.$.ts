@@ -68,7 +68,8 @@ export const Route = createFileRoute("/api/public/proxy/page/$")({
 
         const html = await upstream.text();
         const finalUrl = new URL(upstream.url || targetUrl.href);
-        const rewritten = rewriteHtml(html, finalUrl, rig);
+        const proxyOrigin = new URL(request.url).origin;
+        const rewritten = rewriteHtml(html, finalUrl, proxyOrigin, rig);
 
         return new Response(rewritten, {
           status: 200,
