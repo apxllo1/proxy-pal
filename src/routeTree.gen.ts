@@ -10,33 +10,43 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiPublicProxyPageSplatRouteImport } from './routes/api/public/proxy/page.$'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicProxyPageSplatRoute = ApiPublicProxyPageSplatRouteImport.update({
+  id: '/api/public/proxy/page/$',
+  path: '/api/public/proxy/page/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/public/proxy/page/$': typeof ApiPublicProxyPageSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/public/proxy/page/$': typeof ApiPublicProxyPageSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/public/proxy/page/$': typeof ApiPublicProxyPageSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/api/public/proxy/page/$'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/api/public/proxy/page/$'
+  id: '__root__' | '/' | '/api/public/proxy/page/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiPublicProxyPageSplatRoute: typeof ApiPublicProxyPageSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -48,11 +58,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/proxy/page/$': {
+      id: '/api/public/proxy/page/$'
+      path: '/api/public/proxy/page/$'
+      fullPath: '/api/public/proxy/page/$'
+      preLoaderRoute: typeof ApiPublicProxyPageSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiPublicProxyPageSplatRoute: ApiPublicProxyPageSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
