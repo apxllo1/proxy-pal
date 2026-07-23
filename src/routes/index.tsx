@@ -49,13 +49,10 @@ const EXTERNAL_LAUNCHERS: { label: string; url: string; domain: string; bg: stri
 ];
 
 // Hostnames that allow framing directly (no HTML rewrite needed). Kept
-// empty by default so we route through the rewriter and can inject rig
-// scripts. Add hosts here only if their JS truly requires their own origin.
+// empty by default so we route through the rewriter and can inject scripts
+// needed for in-app navigation. Add hosts here only if their JS truly
+// requires their own origin.
 const DIRECT_FRAME_HOSTS = new Set<string>([]);
-
-// Hosts where the rig panel (Math.random override) is useful.
-const RIGGABLE_HOSTS = new Set<string>(["rngdle.com", "www.rngdle.com"]);
-
 
 function faviconFor(domain: string) {
   return `https://www.google.com/s2/favicons?sz=128&domain=${domain}`;
@@ -68,10 +65,6 @@ function domainOf(u: string) {
     return u;
   }
 }
-
-type RigMode = "off" | "fixed" | "range";
-type Rig = { mode: RigMode; value: number; max: number };
-const DEFAULT_RIG: Rig = { mode: "off", value: 0, max: 100 };
 
 function Home() {
   const run = useServerFn(proxyFetch);
@@ -93,24 +86,17 @@ function Home() {
     Math.random().toString(36).slice(2) + Date.now().toString(36),
   );
   const [identity, setIdentity] = useState<string | null>(null);
-  const [rig, setRig] = useState<Rig>(DEFAULT_RIG);
   const flashMsg = (m: string) => {
     setFlash(m);
     window.setTimeout(() => setFlash((f) => (f === m ? null : f)), 1600);
   };
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const finalUrl = externalUrl ?? stack[stack.length - 1] ?? "";
-  const finalHost = (() => {
-    try { return new URL(finalUrl).hostname.toLowerCase(); } catch { return ""; }
-  })();
-  const rigActive = RIGGABLE_HOSTS.has(finalHost);
 
   useEffect(() => {
     try {
       const pins = localStorage.getItem("prism.pinned");
       if (pins) setPinned(JSON.parse(pins));
-      const r = localStorage.getItem("prism.rig");
-      if (r) setRig({ ...DEFAULT_RIG, ...JSON.parse(r) });
     } catch {}
     // Auto-reset on every visit: clear history + caches, rotate session.
     try { localStorage.removeItem("prism.history"); } catch {}
@@ -122,7 +108,6 @@ function Home() {
       .then(() => setLatency(Math.round(performance.now() - t0)))
       .catch(() => {});
   }, []);
-
 
   const pushHistory = (url: string) => {
     setHistory((prev) => {
@@ -153,17 +138,6 @@ function Home() {
     savePinned(pinned.filter((p) => p.url !== url));
   };
 
-  const buildProxyPageUrl = (target: string, session: string, r: Rig) => {
-    const qp = new URLSearchParams();
-    qp.set("session", session);
-    if (r.mode !== "off") {
-      qp.set("rig_mode", r.mode);
-      qp.set("rig_value", String(r.value));
-      if (r.mode === "range") qp.set("rig_max", String(r.max));
-    }
-    return `/api/public/proxy/page/${encodeURIComponent(target)}?${qp.toString()}`;
-  };
-
   const load = async (raw: string, mode: "push" | "replace" = "push") => {
     const url = raw.trim();
     if (!url) return;
@@ -185,26 +159,10 @@ function Home() {
       return;
     }
 
-    // SPA-heavy hosts (Next.js like rngdle) crash inside a srcdoc iframe
-    // because srcdoc gives them an opaque origin. Serve them through a
-    // real same-origin route so location/history/fetch behave normally.
-    if (RIGGABLE_HOSTS.has(host)) {
-      const proxied = buildProxyPageUrl(normalized, nextSession, rig);
-      launchExternal(proxied, host.replace(/^www\./, "") + " · proxy");
-      setInput(normalized);
-      pushHistory(normalized);
-      setStack((s) =>
-        mode === "replace" ? [...s.slice(0, -1), normalized] : [...s, normalized],
-      );
-      setIdentity(`location #${nextSession.slice(0, 4)}`);
-      return;
-    }
-
     setLoading(true);
     setError(null);
     try {
-      const sendRig = RIGGABLE_HOSTS.has(host) ? rig : undefined;
-      const res = await run({ data: { url: normalized, session: nextSession, rig: sendRig } });
+      const res = await run({ data: { url: normalized, session: nextSession } });
       if (!res.ok) {
         setError(res.error);
       } else {
@@ -215,7 +173,6 @@ function Home() {
         setIdentity((res as { identity?: string }).identity ?? null);
         setReloadKey((k) => k + 1);
       }
-
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
     } finally {
@@ -278,12 +235,6 @@ function Home() {
     }
     flashMsg("Proxy reset — new location assigned");
   };
-
-  const saveRig = (next: Rig) => {
-    setRig(next);
-    try { localStorage.setItem("prism.rig", JSON.stringify(next)); } catch {}
-  };
-
 
   const refreshCurrent = () => {
     if (externalUrl) {
@@ -372,20 +323,11 @@ function Home() {
           </form>
         </div>
 
-        {rigActive && (
-          <RigBar
-            rig={rig}
-            onChange={saveRig}
-            onApply={() => { refreshCurrent(); flashMsg("Rig applied — reloading"); }}
-          />
-        )}
-
         {error && (
           <div className="border-b border-red-500/30 bg-red-500/10 px-4 py-2 font-mono text-xs text-red-200">
             {error}
           </div>
         )}
-
 
         <div className="relative min-h-0 flex-1">
           {isExternal ? (
@@ -432,8 +374,6 @@ function Home() {
       </div>
     );
   }
-
-
 
   // === LANDING ===
   return (
@@ -664,12 +604,7 @@ function Home() {
                 {EXTERNAL_LAUNCHERS.map((t) => (
                   <button
                     key={t.url}
-                    onClick={() =>
-                      RIGGABLE_HOSTS.has(new URL(t.url).hostname.toLowerCase())
-                        ? load(t.url)
-                        : launchExternal(t.url, t.label)
-                    }
-
+                    onClick={() => launchExternal(t.url, t.label)}
                     className="group relative flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02] transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.05]"
                     title={`Opens ${t.label} through ${new URL(t.url).hostname}`}
                   >
@@ -742,89 +677,3 @@ function BarsIcon() {
     </svg>
   );
 }
-
-function RigBar({
-  rig,
-  onChange,
-  onApply,
-}: {
-  rig: Rig;
-  onChange: (r: Rig) => void;
-  onApply: () => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-3 border-b border-[var(--accent-a)]/30 bg-[var(--accent-a)]/[0.06] px-3 py-2 text-xs">
-      <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--accent-a)]">
-        rig
-      </span>
-      <label className="flex items-center gap-1.5 text-white/70">
-        <span>mode</span>
-        <select
-          value={rig.mode}
-          onChange={(e) => onChange({ ...rig, mode: e.target.value as RigMode })}
-          className="rounded-md border border-white/10 bg-black/50 px-2 py-1 font-mono text-[11px] text-white/90 focus:outline-none"
-        >
-          <option value="off">off</option>
-          <option value="range">force number</option>
-          <option value="fixed">fixed Math.random</option>
-        </select>
-      </label>
-      {rig.mode === "range" && (
-        <>
-          <label className="flex items-center gap-1.5 text-white/70">
-            <span>target</span>
-            <input
-              type="number"
-              value={rig.value}
-              onChange={(e) => onChange({ ...rig, value: Number(e.target.value) })}
-              className="w-20 rounded-md border border-white/10 bg-black/50 px-2 py-1 font-mono text-[11px] text-white/90 focus:outline-none"
-            />
-          </label>
-          <label className="flex items-center gap-1.5 text-white/70">
-            <span>of</span>
-            <input
-              type="number"
-              value={rig.max}
-              onChange={(e) => onChange({ ...rig, max: Number(e.target.value) })}
-              className="w-20 rounded-md border border-white/10 bg-black/50 px-2 py-1 font-mono text-[11px] text-white/90 focus:outline-none"
-            />
-          </label>
-          <span className="font-mono text-[10px] text-white/40">
-            → Math.floor(Math.random()×N) = {rig.value} for N≤{rig.max}
-          </span>
-        </>
-      )}
-      {rig.mode === "fixed" && (
-        <label className="flex items-center gap-1.5 text-white/70">
-          <span>value (0–1)</span>
-          <input
-            type="number"
-            step="0.01"
-            min="0"
-            max="0.9999"
-            value={rig.value}
-            onChange={(e) => onChange({ ...rig, value: Number(e.target.value) })}
-            className="w-24 rounded-md border border-white/10 bg-black/50 px-2 py-1 font-mono text-[11px] text-white/90 focus:outline-none"
-          />
-        </label>
-      )}
-      <div className="ml-auto flex items-center gap-2">
-        {rig.mode !== "off" && (
-          <button
-            onClick={() => onChange({ ...rig, mode: "off" })}
-            className="rounded-md border border-white/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-white/60 hover:bg-white/10"
-          >
-            off
-          </button>
-        )}
-        <button
-          onClick={onApply}
-          className="rounded-md bg-gradient-to-r from-[var(--accent-a)] to-[var(--accent-b)] px-3 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-black"
-        >
-          apply
-        </button>
-      </div>
-    </div>
-  );
-}
-
